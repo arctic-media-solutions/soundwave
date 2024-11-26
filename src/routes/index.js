@@ -3,12 +3,25 @@ export function setupRoutes(app, { queue, logger, s3Client }) {
   // Process new audio file
   app.post('/process', async (req, res) => {
     const { file_url, config: processingConfig, webhook_url, metadata } = req.body;
-
+    
     try {
       // Validate request
       if (!file_url) {
+        logger.error('Missing file_url in request');
         return res.status(400).json({ error: 'file_url is required' });
       }
+
+      if (!processingConfig?.outputs || !processingConfig.outputs.length) {
+        logger.error('Missing outputs configuration');
+        return res.status(400).json({ error: 'outputs configuration is required' });
+      }
+
+      if (!processingConfig?.storage?.bucket) {
+        logger.error('Missing storage configuration');
+        return res.status(400).json({ error: 'storage configuration is required' });
+      }
+
+      logger.info('Queueing new job', { file_url });
 
       // Add job to queue
       const job = await queue.add('process-audio', {
@@ -17,26 +30,30 @@ export function setupRoutes(app, { queue, logger, s3Client }) {
         webhook_url,
         metadata,
       }, {
-        // Job options
-        removeOnComplete: true, // Remove job when completed
-        removeOnFail: false,    // Keep failed jobs for debugging
-        attempts: 3,            // Retry up to 3 times
+        removeOnComplete: true,
+        removeOnFail: false,
+        attempts: 3,
         backoff: {
           type: 'exponential',
-          delay: 1000          // Start with 1 second delay
+          delay: 1000
         }
       });
 
-      logger.info(`Job queued: ${job.id}`, { file_url });
+      logger.info(`Job queued successfully: ${job.id}`);
 
+      // Send immediate response
       res.status(202).json({
         job_id: job.id,
-        status: 'queued'
+        status: 'queued',
+        message: 'Processing started'
       });
 
     } catch (err) {
       logger.error('Failed to queue job:', err);
-      res.status(500).json({ error: 'Failed to queue job' });
+      res.status(500).json({ 
+        error: 'Failed to queue job',
+        message: err.message 
+      });
     }
   });
 
@@ -51,6 +68,8 @@ export function setupRoutes(app, { queue, logger, s3Client }) {
 
       const state = await job.getState();
       const progress = job.progress;
+
+      logger.info(`Job ${job.id} status requested:`, { state, progress });
 
       res.json({
         job_id: job.id,

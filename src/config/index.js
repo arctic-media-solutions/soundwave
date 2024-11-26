@@ -30,9 +30,11 @@ export const config = {
   },
   
   redis: {
-    host: process.env.REDIS_HOST || 'localhost',
-    port: parseInt(process.env.REDIS_PORT || '6379', 10),
+    host: process.env.REDIS_HOST,
+    port: parseInt(process.env.REDIS_PORT || '25061'),
+    username: process.env.REDIS_USERNAME || 'default',
     password: process.env.REDIS_PASSWORD,
+    tls: true // Important! DO Redis requires TLS
   },
   
   storage: {
