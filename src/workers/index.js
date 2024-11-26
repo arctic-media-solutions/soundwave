@@ -6,16 +6,30 @@ import { createWriteStream, createReadStream } from 'fs';
 import { unlink } from 'fs/promises';
 import fetch from 'node-fetch';
 import { join } from 'path';
+import { mkdir } from 'fs/promises';
 import { v4 as uuidv4 } from 'uuid';
 import { config } from '../config/index.js';
+import { PutObjectCommand } from '@aws-sdk/client-s3';
 
 export function setupWorkers({ queue, logger, s3Client, concurrentJobs }) {
-  new Worker('audio-processing', async job => {
-    const { file_url, config: processingConfig, webhook_url, metadata } = job.data;
-    const workDir = join(config.processing.tempDir, uuidv4());
-    const inputPath = join(workDir, 'input.audio');
+  logger.info('Setting up audio processing worker...', {
+    redis: {
+      host: config.redis.host,
+      port: config.redis.port,
+    }
+  });
+
+  const worker = new Worker('audio-processing', async job => {
+    logger.info(`Starting to process job ${job.id}`, job.data);
+    
+    const { file_url, config: processingConfig } = job.data;
+    const workDir = join('/tmp', uuidv4());
     
     try {
+      // Create working directory
+      await mkdir(workDir, { recursive: true });
+      const inputPath = join(workDir, 'input.audio');
+      
       // Download file
       logger.info(`Downloading file from ${file_url}`);
       await job.updateProgress(10);
@@ -30,10 +44,17 @@ export function setupWorkers({ queue, logger, s3Client, concurrentJobs }) {
         createWriteStream(inputPath)
       );
 
+      logger.info('File downloaded successfully');
+      await job.updateProgress(20);
+
       // Process each output format
       const outputs = [];
-      for (const output of processingConfig.outputs) {
-        logger.info(`Processing output: ${output.format}`);
+      const totalOutputs = processingConfig.outputs.length;
+      
+      for (let i = 0; i < totalOutputs; i++) {
+        const output = processingConfig.outputs[i];
+        logger.info(`Processing output ${i + 1}/${totalOutputs}: ${output.format}`);
+        
         const outputPath = join(workDir, `output.${output.format}`);
         
         // Process audio with FFmpeg
@@ -58,51 +79,54 @@ export function setupWorkers({ queue, logger, s3Client, concurrentJobs }) {
               command.audioBitrate('128k');
           }
 
-          // Add fade if requested
-          if (output.fade) {
-            command
-              .audioFilters('afade=t=in:ss=0:d=1')
-              .audioFilters(`afade=t=out:st=${output.duration - 1}:d=1`);
-          }
-
           command
             .on('progress', progress => {
-              const percent = Math.min(100, Math.round(progress.percent));
-              job.updateProgress(10 + (percent * 0.6)); // 10-70% progress
+              const baseProgress = 20 + (i * (60 / totalOutputs));
+              const outputProgress = (progress.percent / 100) * (60 / totalOutputs);
+              const totalProgress = Math.min(80, Math.round(baseProgress + outputProgress));
+              job.updateProgress(totalProgress);
             })
             .on('end', resolve)
             .on('error', reject)
             .save(outputPath);
         });
 
+        // Get file info
+        const fileInfo = await new Promise((resolve, reject) => {
+          ffmpeg.ffprobe(outputPath, (err, metadata) => {
+            if (err) reject(err);
+            else resolve(metadata);
+          });
+        });
+
         // Upload to storage
         const key = `${processingConfig.storage.path}/${uuidv4()}.${output.format}`;
-        await s3Client.putObject({
+        logger.info(`Uploading output to ${key}`);
+        
+        await s3Client.send(new PutObjectCommand({
           Bucket: processingConfig.storage.bucket,
           Key: key,
           Body: createReadStream(outputPath),
           ContentType: `audio/${output.format}`,
           Metadata: {
-            originalUrl: file_url,
-            processingConfig: JSON.stringify(output),
-            ...metadata
+            format: output.format,
+            quality: output.quality,
+            duration: fileInfo.format.duration.toString(),
+            sampleRate: (output.sample_rate || 44100).toString(),
+            channels: (output.channels || 2).toString()
           }
-        });
-
-        // Get file duration
-        const duration = await new Promise((resolve, reject) => {
-          ffmpeg.ffprobe(outputPath, (err, metadata) => {
-            if (err) reject(err);
-            else resolve(metadata.format.duration);
-          });
-        });
+        }));
 
         outputs.push({
           url: `https://${processingConfig.storage.bucket}.${config.storage.endpoint}/${key}`,
           format: output.format,
-          duration,
+          duration: fileInfo.format.duration,
+          size: fileInfo.format.size,
           quality: output.quality
         });
+
+        // Clean up output file
+        await unlink(outputPath);
       }
 
       // Generate waveform data if requested
@@ -116,11 +140,10 @@ export function setupWorkers({ queue, logger, s3Client, concurrentJobs }) {
           ffmpeg(inputPath)
             .toFormat('wav')
             .audioChannels(1)
-            .audioFrequency(8000) // Lower sample rate for waveform
-            .audioFilters('aresample=8000') // Resample for consistent points
+            .audioFrequency(8000)
+            .audioFilters('aresample=8000')
             .on('error', reject)
             .on('progress', progress => {
-              // Sample amplitude data
               if (progress.frames) {
                 const amplitude = Math.abs(progress.frames);
                 maxAmplitude = Math.max(maxAmplitude, amplitude);
@@ -132,7 +155,7 @@ export function setupWorkers({ queue, logger, s3Client, concurrentJobs }) {
               const normalizedPoints = points.map(p => p / maxAmplitude);
               
               // Reduce to requested number of points
-              const step = Math.ceil(normalizedPoints.length / processingConfig.waveform.points);
+              const step = Math.ceil(normalizedPoints.length / (processingConfig.waveform.points || 1000));
               const reducedPoints = [];
               
               for (let i = 0; i < normalizedPoints.length; i += step) {
@@ -143,7 +166,7 @@ export function setupWorkers({ queue, logger, s3Client, concurrentJobs }) {
               
               resolve(reducedPoints);
             })
-            .save('/dev/null'); // We don't need the output file
+            .save('/dev/null'); // Discard output, we only need the progress events
         });
 
         waveform = {
@@ -152,76 +175,71 @@ export function setupWorkers({ queue, logger, s3Client, concurrentJobs }) {
         };
       }
 
-      // Clean up temp files
+      // Clean up input file
       await unlink(inputPath);
-      for (const output of outputs) {
-        try {
-          await unlink(join(workDir, `output.${output.format}`));
-        } catch (err) {
-          logger.warn(`Failed to clean up output file: ${err.message}`);
-        }
-      }
-
-      // Send webhook if configured
-      if (webhook_url) {
-        try {
-          await fetch(webhook_url, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              job_id: job.id,
-              status: 'completed',
-              outputs,
-              waveform,
-              metadata
-            })
-          });
-        } catch (err) {
-          logger.error('Failed to send webhook:', err);
-        }
+      
+      // Try to remove work directory
+      try {
+        await rmdir(workDir);
+      } catch (err) {
+        logger.warn(`Failed to remove work directory: ${err.message}`);
       }
 
       logger.info(`Job ${job.id} completed successfully`);
-      return { outputs, waveform };
+      await job.updateProgress(100);
+      
+      return {
+        outputs,
+        waveform
+      };
 
     } catch (error) {
       logger.error(`Job ${job.id} failed:`, error);
       
       // Clean up on error
       try {
-        await unlink(inputPath);
+        await unlink(join(workDir, 'input.audio'));
+        await rmdir(workDir);
       } catch (err) {
-        logger.warn(`Failed to clean up input file: ${err.message}`);
+        logger.warn(`Failed to clean up after error: ${err.message}`);
       }
 
-      // Send failure webhook
-      if (webhook_url) {
-        try {
-          await fetch(webhook_url, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              job_id: job.id,
-              status: 'failed',
-              error: error.message,
-              metadata
-            })
-          });
-        } catch (err) {
-          logger.error('Failed to send failure webhook:', err);
-        }
-      }
-
-      throw error; // Re-throw to mark job as failed
+      throw error;
     }
   }, {
     connection: {
       host: config.redis.host,
       port: config.redis.port,
+      username: config.redis.username,
       password: config.redis.password,
+      tls: {
+        rejectUnauthorized: false
+      }
     },
-    concurrency: concurrentJobs
+    concurrency: concurrentJobs,
+  });
+
+  // Add worker event handlers
+  worker.on('ready', () => {
+    logger.info('Worker is ready to process jobs');
+  });
+
+  worker.on('active', job => {
+    logger.info(`Job ${job.id} has started processing`);
+  });
+
+  worker.on('completed', job => {
+    logger.info(`Job ${job.id} has completed successfully`);
+  });
+
+  worker.on('failed', (job, err) => {
+    logger.error(`Job ${job?.id} has failed:`, err);
+  });
+
+  worker.on('error', err => {
+    logger.error('Worker encountered an error:', err);
   });
 
   logger.info(`Worker setup complete. Processing up to ${concurrentJobs} jobs concurrently.`);
+  return worker;
 }
