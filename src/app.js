@@ -172,12 +172,12 @@ app.use((req, res, next) => {
 setupRoutes(app, { queue: processingQueue, logger, s3Client });
 
 // Setup workers
-setupWorkers({ 
-  queue: processingQueue, 
-  logger, 
+setupWorkers({
+  queue: processingQueue,
+  logger,
   s3Client,
   concurrentJobs: config.processing.concurrentJobs,
-  redisConfig
+  config  // Pass the entire config object
 });
 
 // Error handling

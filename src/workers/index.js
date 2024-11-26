@@ -3,8 +3,8 @@ import fetch from 'node-fetch';
 import { AudioProcessor } from '../processors/audio-processor.js';
 import { v4 as uuidv4 } from 'uuid';
 
-export function setupWorkers({ queue, logger, concurrentJobs, config }) {
-  const processor = new AudioProcessor(config, logger);
+export function setupWorkers({ queue, logger, s3Client, concurrentJobs, config }) {  // Added config here
+  const processor = new AudioProcessor(config, logger);  // Now config is available
 
   const worker = new Worker('audio-processing', async job => {
     const { file_url, config: processingConfig, webhook_url, metadata } = job.data;
@@ -106,14 +106,7 @@ export function setupWorkers({ queue, logger, concurrentJobs, config }) {
       await processor.cleanup(files);
     }
   }, {
-    connection: {
-      host: config.redis.host,
-      port: config.redis.port,
-      username: config.redis.username,
-      password: config.redis.password,
-      tls: true
-    },
-    concurrency: concurrentJobs
+    connection: config.redis  // Use the redis config directly
   });
 
   // Log worker events
