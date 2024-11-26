@@ -6,6 +6,8 @@ RUN apt-get update && apt-get install -y \
     ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
+RUN apt-get update && apt-get install -y ffmpeg
+
 # Create app directory
 WORKDIR /usr/src/app
 
@@ -19,7 +21,7 @@ RUN npm install --production
 COPY . .
 
 # Create temp directory for processing
-RUN mkdir -p /tmp/soundwave
+RUN mkdir -p /tmp/soundwave && chmod 777 /tmp/soundwave
 
 # Expose port
 EXPOSE 3000
