@@ -19,6 +19,7 @@ export const config = {
     port: parseInt(process.env.REDIS_PORT || '25061', 10),
     username: process.env.REDIS_USERNAME || 'default',
     password: process.env.REDIS_PASSWORD,
+    enableTls: true,
   },
   
   storage: {

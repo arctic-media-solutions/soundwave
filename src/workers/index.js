@@ -3,15 +3,14 @@ import { Worker } from 'bullmq';
 import ffmpeg from 'fluent-ffmpeg';
 import { pipeline } from 'stream/promises';
 import { createWriteStream, createReadStream } from 'fs';
-import { unlink } from 'fs/promises';
+import { unlink, mkdir, rmdir } from 'fs/promises';
 import fetch from 'node-fetch';
 import { join } from 'path';
-import { mkdir } from 'fs/promises';
 import { v4 as uuidv4 } from 'uuid';
 import { config } from '../config/index.js';
 import { PutObjectCommand } from '@aws-sdk/client-s3';
 
-export function setupWorkers({ queue, logger, s3Client, concurrentJobs }) {
+export function setupWorkers({ queue, logger, s3Client, concurrentJobs, redisConfig }) {
   logger.info('Setting up audio processing worker...', {
     redis: {
       host: config.redis.host,
@@ -207,16 +206,10 @@ export function setupWorkers({ queue, logger, s3Client, concurrentJobs }) {
       throw error;
     }
   }, {
-    connection: {
-      host: config.redis.host,
-      port: config.redis.port,
-      username: config.redis.username,
-      password: config.redis.password,
-      tls: {
-        rejectUnauthorized: false
-      }
-    },
+    connection: redisConfig,
     concurrency: concurrentJobs,
+    lockDuration: 30000,
+    maxStalledCount: 2
   });
 
   // Add worker event handlers

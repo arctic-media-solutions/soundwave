@@ -2,6 +2,7 @@
 import express from 'express';
 import winston from 'winston';
 import { Queue } from 'bullmq';
+import Redis from 'ioredis';
 import { S3Client } from '@aws-sdk/client-s3';
 import { config } from './config/index.js';
 import { setupRoutes } from './routes/index.js';
@@ -34,30 +35,38 @@ const s3Client = new S3Client({
   },
 });
 
-// Configure processing queue with DO Redis configuration
-const processingQueue = new Queue('audio-processing', {
-  connection: {
-    host: config.redis.host,
-    port: config.redis.port,
-    username: config.redis.username,
-    password: config.redis.password,
-    tls: {
-      rejectUnauthorized: false // Required for DO managed Redis
-    }
+// Redis Configuration
+const redisConfig = {
+  host: config.redis.host,
+  port: config.redis.port,
+  username: config.redis.username,
+  password: config.redis.password,
+  tls: {
+    rejectUnauthorized: false,
   },
+  retryStrategy(times) {
+    const delay = Math.min(times * 50, 2000);
+    return delay;
+  },
+  maxRetriesPerRequest: 3,
+  enableReadyCheck: false,
+  showFriendlyErrorStack: true
+};
+
+// Create Redis instance
+const redis = new Redis(redisConfig);
+
+redis.on('connect', () => {
+  logger.info('Redis connected successfully');
 });
 
-// Monitor Redis connection
-processingQueue.on('error', (error) => {
-  logger.error('Redis Queue Error:', error);
+redis.on('error', (err) => {
+  logger.error('Redis connection error:', err);
 });
 
-processingQueue.on('connected', () => {
-  logger.info('Redis Queue Connected');
-});
-
-processingQueue.on('disconnected', () => {
-  logger.warn('Redis Queue Disconnected');
+// Configure processing queue with Redis configuration
+const processingQueue = new Queue('audio-processing', {
+  connection: redisConfig
 });
 
 // Create express app
@@ -80,7 +89,8 @@ app.get('/health', (req, res) => {
   res.json({ 
     status: 'ok',
     version: process.env.npm_package_version,
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    redis: redis.status
   });
 });
 
@@ -101,7 +111,8 @@ setupWorkers({
   queue: processingQueue, 
   logger, 
   s3Client,
-  concurrentJobs: config.processing.concurrentJobs
+  concurrentJobs: config.processing.concurrentJobs,
+  redisConfig
 });
 
 // Error handling
@@ -124,5 +135,6 @@ app.listen(port, () => {
 process.on('SIGTERM', async () => {
   logger.info('SIGTERM received. Shutting down gracefully...');
   await processingQueue.close();
+  await redis.quit();
   process.exit(0);
 });
