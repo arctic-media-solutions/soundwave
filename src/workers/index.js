@@ -3,12 +3,12 @@ import fetch from 'node-fetch';
 import { AudioProcessor } from '../processors/audio-processor.js';
 import { v4 as uuidv4 } from 'uuid';
 
-export function setupWorkers({ queue, logger, s3Client, concurrentJobs, config }) {  // Added config here
-  const processor = new AudioProcessor(config, logger);  // Now config is available
+export function setupWorkers({ queue, logger, s3Client, concurrentJobs, config }) {
+  const processor = new AudioProcessor(config, logger);
 
   const worker = new Worker('audio-processing', async job => {
     const { file_url, config: processingConfig, webhook_url, metadata } = job.data;
-    const files = [];  // Track files for cleanup
+    const files = [];
 
     try {
       // Download file
@@ -20,17 +20,32 @@ export function setupWorkers({ queue, logger, s3Client, concurrentJobs, config }
       // Process each output format
       await job.updateProgress(20);
       const outputs = [];
+
       for (const output of processingConfig.outputs) {
+        logger.info(`Processing output format: ${output.format}`, output);
+
         const processedFile = await processor.processAudio(
             job.id,
             sourceFile,
-            output.format,
-            output.quality
+            {
+              format: output.format,
+              quality: output.quality,
+              duration: output.duration,
+              fade: output.fade,
+              prefix: output.prefix,
+              sample_rate: output.sample_rate,
+              channels: output.channels
+            }
         );
         files.push(processedFile);
 
-        // Upload to storage
-        const key = `${processingConfig.storage.path}/${uuidv4()}.${output.format}`;
+        // Generate unique filename based on whether it's a preview
+        const filename = output.prefix
+            ? `${output.prefix}-${uuidv4()}.${output.format}`
+            : `${uuidv4()}.${output.format}`;
+
+        const key = `${processingConfig.storage.path}/${filename}`;
+
         const url = await processor.uploadToStorage(
             processedFile,
             processingConfig.storage.bucket,
@@ -40,7 +55,9 @@ export function setupWorkers({ queue, logger, s3Client, concurrentJobs, config }
         outputs.push({
           url,
           format: output.format,
-          quality: output.quality
+          quality: output.quality,
+          duration: output.duration,
+          type: output.prefix === 'preview' ? 'preview' : 'full'
         });
       }
 
@@ -81,7 +98,6 @@ export function setupWorkers({ queue, logger, s3Client, concurrentJobs, config }
     } catch (error) {
       logger.error(`Job ${job.id} failed:`, error);
 
-      // Try to notify webhook of failure
       if (webhook_url) {
         try {
           await fetch(webhook_url, {
@@ -102,14 +118,13 @@ export function setupWorkers({ queue, logger, s3Client, concurrentJobs, config }
       throw error;
 
     } finally {
-      // Cleanup temporary files
       await processor.cleanup(files);
     }
   }, {
-    connection: config.redis  // Use the redis config directly
+    connection: config.redis,
+    concurrency: concurrentJobs
   });
 
-  // Log worker events
   worker.on('completed', job => {
     logger.info(`Job ${job.id} completed successfully`);
   });

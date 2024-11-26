@@ -27,14 +27,10 @@ export class AudioProcessor {
     }
 
     async downloadFile(url, jobId) {
+        this.logger.info(`Downloading file from ${url}`);
         const response = await fetch(url);
         if (!response.ok) {
             throw new Error(`Failed to download file: ${response.statusText}`);
-        }
-
-        const contentLength = response.headers.get('content-length');
-        if (contentLength && parseInt(contentLength) > this.config.processing.maxFileSize) {
-            throw new Error('File size exceeds maximum allowed size');
         }
 
         const tempFilePath = path.join(this.tempDir, `${jobId}-source`);
@@ -42,35 +38,70 @@ export class AudioProcessor {
         return tempFilePath;
     }
 
-    async processAudio(jobId, sourceFile, format, quality) {
-        const outputPath = path.join(this.tempDir, `${jobId}-output.${format}`);
+    async processAudio(jobId, sourceFile, options) {
+        const {
+            format = 'mp3',
+            quality = 'medium',
+            duration,
+            fade = false,
+            prefix = '',
+            sample_rate = 44100,
+            channels = 2
+        } = options;
+
+        const outputFilename = prefix
+            ? `${prefix}-${jobId}-output.${format}`
+            : `${jobId}-output.${format}`;
+        const outputPath = path.join(this.tempDir, outputFilename);
 
         return new Promise((resolve, reject) => {
-            let command = ffmpeg(sourceFile)
-                .toFormat(format);
+            let command = ffmpeg(sourceFile);
+
+            // Set basic audio options
+            command
+                .toFormat(format)
+                .audioChannels(channels)
+                .audioFrequency(sample_rate);
 
             // Apply quality settings
             switch(quality) {
                 case 'high':
-                    if (format === 'mp3') {
-                        command.audioBitrate(320);
-                    }
+                    command.audioBitrate('320k');
                     break;
                 case 'medium':
-                    if (format === 'mp3') {
-                        command.audioBitrate(192);
-                    }
+                    command.audioBitrate('192k');
                     break;
                 case 'low':
-                    if (format === 'mp3') {
-                        command.audioBitrate(128);
-                    }
+                    command.audioBitrate('128k');
                     break;
             }
 
+            // If this is a preview, apply duration limit and fades
+            if (duration) {
+                command.duration(duration);
+
+                if (fade) {
+                    const fadeLength = Math.min(3, duration * 0.1); // 10% of duration or 3 seconds max
+                    command
+                        .audioFilters([
+                            `afade=t=in:st=0:d=${fadeLength}`,
+                            `afade=t=out:st=${duration-fadeLength}:d=${fadeLength}`
+                        ]);
+                }
+            }
+
             command
-                .on('end', () => resolve(outputPath))
-                .on('error', (err) => reject(err))
+                .on('start', commandLine => {
+                    this.logger.info('FFmpeg command:', commandLine);
+                })
+                .on('end', () => {
+                    this.logger.info(`Processing completed for ${outputFilename}`);
+                    resolve(outputPath);
+                })
+                .on('error', (err) => {
+                    this.logger.error('FFmpeg error:', err);
+                    reject(err);
+                })
                 .save(outputPath);
         });
     }
@@ -115,6 +146,7 @@ export class AudioProcessor {
     }
 
     async uploadToStorage(filePath, bucket, key) {
+        this.logger.info(`Uploading ${filePath} to ${bucket}/${key}`);
         const fileStream = fs.createReadStream(filePath);
 
         const uploadCommand = new PutObjectCommand({
@@ -144,6 +176,7 @@ export class AudioProcessor {
         for (const file of files) {
             try {
                 await fs.promises.unlink(file);
+                this.logger.info(`Cleaned up temporary file: ${file}`);
             } catch (err) {
                 this.logger.error(`Failed to cleanup file ${file}:`, err);
             }
