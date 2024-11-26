@@ -46,16 +46,23 @@ export class AudioProcessor {
             fade = false,
             prefix = '',
             sample_rate = 44100,
-            channels = 2
+            channels = 2,
+            normalize = false,
+            startTime = 0,
+            filename
         } = options;
 
-        const outputFilename = prefix
-            ? `${prefix}-${jobId}-output.${format}`
-            : `${jobId}-output.${format}`;
+        const outputFilename = filename ||
+            (prefix ? `${prefix}-${jobId}-output.${format}` : `${jobId}-output.${format}`);
         const outputPath = path.join(this.tempDir, outputFilename);
 
         return new Promise((resolve, reject) => {
             let command = ffmpeg(sourceFile);
+
+            // Set start time if specified
+            if (startTime > 0) {
+                command.setStartTime(startTime);
+            }
 
             // Set basic audio options
             command
@@ -76,6 +83,11 @@ export class AudioProcessor {
                     break;
             }
 
+            // Apply normalization if requested
+            if (normalize) {
+                command.audioFilters('loudnorm');
+            }
+
             // If this is a preview, apply duration limit and fades
             if (duration) {
                 command.duration(duration);
@@ -93,6 +105,9 @@ export class AudioProcessor {
             command
                 .on('start', commandLine => {
                     this.logger.info('FFmpeg command:', commandLine);
+                })
+                .on('progress', progress => {
+                    this.logger.debug('Processing progress:', progress);
                 })
                 .on('end', () => {
                     this.logger.info(`Processing completed for ${outputFilename}`);
@@ -114,7 +129,6 @@ export class AudioProcessor {
                 .toFormat('wav')
                 .audioFilters(`volumedetect,astats=metadata=1:reset=1`)
                 .on('stderr', line => {
-                    // Parse FFmpeg output to extract volume data
                     if (line.includes('mean_volume:')) {
                         const match = line.match(/mean_volume: ([-\d.]+)/);
                         if (match) {
@@ -123,21 +137,18 @@ export class AudioProcessor {
                     }
                 })
                 .on('end', () => {
-                    // Normalize and reduce points to requested size
                     const normalized = this.normalizeWaveform(waveformData, points);
                     resolve(normalized);
                 })
                 .on('error', reject)
-                .save('-');  // Output to null since we only need the stats
+                .save('-');
         });
     }
 
     normalizeWaveform(data, points) {
-        // Normalize waveform data to 0-1 range and requested number of points
         const max = Math.max(...data);
         const normalized = data.map(v => v / max);
 
-        // Reduce to requested number of points
         const step = normalized.length / points;
         return Array.from({length: points}, (_, i) => {
             const idx = Math.floor(i * step);
