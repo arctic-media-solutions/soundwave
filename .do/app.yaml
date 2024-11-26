@@ -1,0 +1,43 @@
+name: soundwave
+services:
+  - name: api
+    github:
+      branch: main
+      deploy_on_push: true
+      repo: arctic-media-solutions/soundwave
+    dockerfile_path: Dockerfile
+    instance_count: 1
+    instance_size_slug: basic-xs
+    envs:
+      - key: NODE_ENV
+        value: production
+      - key: API_KEYS
+        type: SECRET
+      - key: REDIS_HOST
+        value: ${redis.host}
+      - key: REDIS_PORT
+        value: ${redis.port}
+      - key: REDIS_PASSWORD
+        type: SECRET
+      - key: STORAGE_ENDPOINT
+        value: ${spaces.endpoint}
+      - key: STORAGE_REGION
+        value: ${spaces.region}
+      - key: STORAGE_ACCESS_KEY
+        type: SECRET
+      - key: STORAGE_SECRET_KEY
+        type: SECRET
+      - key: STORAGE_BUCKET
+        value: your-bucket-name
+      - key: MAX_FILE_SIZE
+        value: "300000000"
+      - key: MAX_DURATION
+        value: "3600"
+      - key: CONCURRENT_JOBS
+        value: "2"
+
+databases:
+  - engine: REDIS
+    name: redis
+    production: false
+    version: "6"
