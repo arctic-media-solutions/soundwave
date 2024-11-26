@@ -1,3 +1,4 @@
+// src/app.js
 import express from 'express';
 import winston from 'winston';
 import { Queue } from 'bullmq';
@@ -33,15 +34,30 @@ const s3Client = new S3Client({
   },
 });
 
-// Configure processing queue with Redis connection
+// Configure processing queue with DO Redis configuration
 const processingQueue = new Queue('audio-processing', {
   connection: {
     host: config.redis.host,
-    port: parseInt(config.redis.port, 10),
+    port: config.redis.port,
     username: config.redis.username,
     password: config.redis.password,
-    db: 0 // Adjust database index if needed
+    tls: {
+      rejectUnauthorized: false // Required for DO managed Redis
+    }
   },
+});
+
+// Monitor Redis connection
+processingQueue.on('error', (error) => {
+  logger.error('Redis Queue Error:', error);
+});
+
+processingQueue.on('connected', () => {
+  logger.info('Redis Queue Connected');
+});
+
+processingQueue.on('disconnected', () => {
+  logger.warn('Redis Queue Disconnected');
 });
 
 // Create express app
@@ -61,7 +77,7 @@ app.use((req, res, next) => {
 
 // Health check (no auth required)
 app.get('/health', (req, res) => {
-  res.json({
+  res.json({ 
     status: 'ok',
     version: process.env.npm_package_version,
     timestamp: new Date().toISOString()
@@ -80,10 +96,10 @@ app.use((req, res, next) => {
 // Setup routes
 setupRoutes(app, { queue: processingQueue, logger, s3Client });
 
-// Setup workers (this starts processing audio files)
-setupWorkers({
-  queue: processingQueue,
-  logger,
+// Setup workers
+setupWorkers({ 
+  queue: processingQueue, 
+  logger, 
   s3Client,
   concurrentJobs: config.processing.concurrentJobs
 });
@@ -91,15 +107,16 @@ setupWorkers({
 // Error handling
 app.use((err, req, res, next) => {
   logger.error('Unhandled error:', err);
-  res.status(500).json({
+  res.status(500).json({ 
     error: 'Internal server error',
     message: config.server.env === 'development' ? err.message : undefined
   });
 });
 
 // Start server
-app.listen(config.server.port, () => {
-  logger.info(`🎵 Soundwave service listening on port ${config.server.port}`);
+const port = config.server.port || 3000;
+app.listen(port, () => {
+  logger.info(`🎵 Soundwave service listening on port ${port}`);
   logger.info(`Environment: ${config.server.env}`);
 });
 
@@ -109,4 +126,3 @@ process.on('SIGTERM', async () => {
   await processingQueue.close();
   process.exit(0);
 });
-
