@@ -66,7 +66,16 @@ redis.on('error', (err) => {
 
 // Configure processing queue with Redis configuration
 const processingQueue = new Queue('audio-processing', {
-  connection: redisConfig
+  connection: redisConfig,
+  defaultJobOptions: {
+    removeOnComplete: false,  // Keep completed jobs
+    removeOnFail: false,      // Keep failed jobs
+    attempts: 3,              // Allow 3 attempts
+    backoff: {
+      type: 'exponential',
+      delay: 1000
+    }
+  }
 });
 
 // Create express app
@@ -92,6 +101,47 @@ app.get('/health', (req, res) => {
     timestamp: new Date().toISOString(),
     redis: redis.status
   });
+});
+
+app.get('/debug/queues', async (req, res) => {
+  try {
+    const queueLength = await redis.llen('bull:audio-processing:wait');
+    const activeJobs = await redis.llen('bull:audio-processing:active');
+    const failedJobs = await redis.llen('bull:audio-processing:failed');
+    const completedJobs = await redis.llen('bull:audio-processing:completed');
+
+    res.json({
+      waiting: queueLength,
+      active: activeJobs,
+      failed: failedJobs,
+      completed: completedJobs,
+      redis_status: redis.status,
+      worker_status: processingQueue.worker ? 'running' : 'stopped'
+    });
+  } catch (err) {
+    res.status(500).json({
+      error: 'Failed to get queue stats',
+      details: err.message
+    });
+  }
+});
+
+// Also add this route for checking specific job details
+app.get('/debug/jobs/:id', async (req, res) => {
+  try {
+    const jobKey = `bull:audio-processing:${req.params.id}`;
+    const jobData = await redis.hgetall(jobKey);
+    
+    res.json({
+      exists: Object.keys(jobData).length > 0,
+      data: jobData
+    });
+  } catch (err) {
+    res.status(500).json({
+      error: 'Failed to get job details',
+      details: err.message
+    });
+  }
 });
 
 // API Key authentication middleware

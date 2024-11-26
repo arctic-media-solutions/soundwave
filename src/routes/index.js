@@ -58,30 +58,50 @@ export function setupRoutes(app, { queue, logger, s3Client }) {
   });
 
   // Get job status
-  app.get('/jobs/:jobId', async (req, res) => {
-    try {
-      const job = await queue.getJob(req.params.jobId);
-      
-      if (!job) {
-        return res.status(404).json({ error: 'Job not found' });
-      }
-
-      const state = await job.getState();
-      const progress = job.progress;
-
-      logger.info(`Job ${job.id} status requested:`, { state, progress });
-
-      res.json({
-        job_id: job.id,
-        status: state,
-        progress,
-        ...(job.returnvalue || {}),
-        error: job.failedReason
+app.get('/jobs/:jobId', async (req, res) => {
+  try {
+    const job = await queue.getJob(req.params.jobId);
+    
+    if (!job) {
+      logger.warn(`Job ${req.params.jobId} not found in queue`);
+      return res.status(404).json({ 
+        error: 'Job not found',
+        debug_info: {
+          job_id: req.params.jobId,
+          queue_name: 'audio-processing'
+        }
       });
-
-    } catch (err) {
-      logger.error('Failed to get job status:', err);
-      res.status(500).json({ error: 'Failed to get job status' });
     }
-  });
-}
+
+    const state = await job.getState();
+    const progress = job.progress;
+    const failedReason = job.failedReason;
+    const stacktrace = job.stacktrace;
+
+    logger.info(`Job ${job.id} status:`, {
+      state,
+      progress,
+      failedReason,
+      hasStacktrace: !!stacktrace
+    });
+
+    res.json({
+      job_id: job.id,
+      status: state,
+      progress,
+      data: job.data,
+      result: job.returnvalue,
+      error: failedReason,
+      stacktrace: stacktrace,
+      timestamp: job.timestamp,
+      attempts: job.attemptsMade
+    });
+
+  } catch (err) {
+    logger.error('Failed to get job status:', err);
+    res.status(500).json({ 
+      error: 'Failed to get job status',
+      details: err.message
+    });
+  }
+});
