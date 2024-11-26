@@ -54,7 +54,17 @@ const redisConfig = {
 };
 
 // Create Redis instance
-const redis = new Redis(redisConfig);
+const redis = new Redis(config.redis.url, {
+  tls: {
+    rejectUnauthorized: false
+  },
+  maxRetriesPerRequest: 3,
+  enableReadyCheck: false,
+  retryStrategy(times) {
+    const delay = Math.min(times * 50, 2000);
+    return delay;
+  }
+});
 
 redis.on('connect', () => {
   logger.info('Redis connected successfully');
@@ -66,11 +76,16 @@ redis.on('error', (err) => {
 
 // Configure processing queue with Redis configuration
 const processingQueue = new Queue('audio-processing', {
-  connection: redisConfig,
+  connection: {
+    url: config.redis.url,
+    tls: {
+      rejectUnauthorized: false
+    }
+  },
   defaultJobOptions: {
-    removeOnComplete: false,  // Keep completed jobs
-    removeOnFail: false,      // Keep failed jobs
-    attempts: 3,              // Allow 3 attempts
+    removeOnComplete: false,
+    removeOnFail: false,
+    attempts: 3,
     backoff: {
       type: 'exponential',
       delay: 1000
