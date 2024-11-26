@@ -1,43 +1,58 @@
+# .do/app.yaml
 name: soundwave
+alerts:
+- rule: DEPLOYMENT_FAILED
+- rule: DOMAIN_FAILED
+
 services:
-  - name: api
-    github:
-      branch: main
-      deploy_on_push: true
-      repo: arctic-media-solutions/soundwave
-    dockerfile_path: Dockerfile
-    instance_count: 1
-    instance_size_slug: basic-xs
-    envs:
-      - key: NODE_ENV
-        value: production
-      - key: API_KEYS
-        type: SECRET
-      - key: REDIS_HOST
-        value: ${redis.host}
-      - key: REDIS_PORT
-        value: ${redis.port}
-      - key: REDIS_PASSWORD
-        type: SECRET
-      - key: STORAGE_ENDPOINT
-        value: ${spaces.endpoint}
-      - key: STORAGE_REGION
-        value: ${spaces.region}
-      - key: STORAGE_ACCESS_KEY
-        type: SECRET
-      - key: STORAGE_SECRET_KEY
-        type: SECRET
-      - key: STORAGE_BUCKET
-        value: your-bucket-name
-      - key: MAX_FILE_SIZE
-        value: "300000000"
-      - key: MAX_DURATION
-        value: "3600"
-      - key: CONCURRENT_JOBS
-        value: "2"
+- name: soundwave-api
+  dockerfile_path: Dockerfile
+  source_dir: /
+  git:
+    branch: main
+    repo_clone_url: https://github.com/arctic-media-solutionse/soundwave.git
+  health_check:
+    http_path: /health
+  instance_count: 1
+  instance_size_slug: basic-xs
+  envs:
+    - key: NODE_ENV
+      scope: RUN_TIME
+      value: production
+    - key: API_KEYS
+      scope: RUN_TIME
+      type: SECRET
+      value: ${API_KEYS}
+    - key: REDIS_HOST
+      scope: RUN_TIME
+      value: ${redis.HOSTNAME}
+    - key: REDIS_PORT
+      scope: RUN_TIME
+      value: ${redis.PORT}
+    - key: REDIS_PASSWORD
+      scope: RUN_TIME
+      type: SECRET
+      value: ${redis.PASSWORD}
+    - key: STORAGE_ENDPOINT
+      scope: RUN_TIME
+      value: ${spaces.ENDPOINT}
+    - key: STORAGE_REGION
+      scope: RUN_TIME
+      value: ${spaces.REGION}
+    - key: STORAGE_ACCESS_KEY
+      scope: RUN_TIME
+      type: SECRET
+      value: ${spaces.ACCESS_KEY}
+    - key: STORAGE_SECRET_KEY
+      scope: RUN_TIME
+      type: SECRET
+      value: ${spaces.SECRET_KEY}
+    - key: STORAGE_BUCKET
+      scope: RUN_TIME
+      value: your-bucket-name
 
 databases:
-  - engine: REDIS
-    name: redis
-    production: false
-    version: "6"
+- name: soundwave-redis
+  engine: REDIS
+  version: "7"
+  production: false

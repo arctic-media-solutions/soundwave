@@ -1,0 +1,10 @@
+# .do/deploy.template.yaml
+spec:
+  name: soundwave
+  services:
+  - name: soundwave-api
+    git:
+      branch: main
+      repo_clone_url: https://github.com/arctic-media-solutions/soundwave.git
+    dockerfile_path: Dockerfile
+    source_dir: /
