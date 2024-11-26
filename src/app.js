@@ -1,4 +1,3 @@
-// src/app.js
 import express from 'express';
 import winston from 'winston';
 import { Queue } from 'bullmq';
@@ -34,12 +33,14 @@ const s3Client = new S3Client({
   },
 });
 
-// Configure processing queue
+// Configure processing queue with Redis connection
 const processingQueue = new Queue('audio-processing', {
   connection: {
     host: config.redis.host,
-    port: config.redis.port,
+    port: parseInt(config.redis.port, 10),
+    username: config.redis.username,
     password: config.redis.password,
+    db: 0 // Adjust database index if needed
   },
 });
 
@@ -80,9 +81,9 @@ app.use((req, res, next) => {
 setupRoutes(app, { queue: processingQueue, logger, s3Client });
 
 // Setup workers (this starts processing audio files)
-setupWorkers({ 
-  queue: processingQueue, 
-  logger, 
+setupWorkers({
+  queue: processingQueue,
+  logger,
   s3Client,
   concurrentJobs: config.processing.concurrentJobs
 });
@@ -90,7 +91,7 @@ setupWorkers({
 // Error handling
 app.use((err, req, res, next) => {
   logger.error('Unhandled error:', err);
-  res.status(500).json({ 
+  res.status(500).json({
     error: 'Internal server error',
     message: config.server.env === 'development' ? err.message : undefined
   });
@@ -108,3 +109,4 @@ process.on('SIGTERM', async () => {
   await processingQueue.close();
   process.exit(0);
 });
+
