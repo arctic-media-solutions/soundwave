@@ -7,6 +7,27 @@ import path from 'path';
 export function setupWorkers({ queue, logger, s3Client, concurrentJobs, config }) {
   const processor = new AudioProcessor(config, logger);
 
+  async function sendWebhook(url, data) {
+    try {
+      logger.info(`Sending webhook to ${url}`, { jobId: data.job_id });
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data)
+      });
+
+      if (!response.ok) {
+        throw new Error(`Webhook failed with status ${response.status}`);
+      }
+
+      logger.info(`Webhook sent successfully to ${url}`, { jobId: data.job_id });
+      return true;
+    } catch (error) {
+      logger.error(`Webhook failed for ${url}:`, error);
+      return false;
+    }
+  }
+
   const worker = new Worker('audio-processing', async job => {
     const { file_url, internal_id, config: processingConfig, webhook_url, metadata } = job.data;
     const files = [];
@@ -17,6 +38,17 @@ export function setupWorkers({ queue, logger, s3Client, concurrentJobs, config }
       logger.info(`Downloading file for job ${job.id}`, { internal_id });
       const sourceFile = await processor.downloadFile(file_url, job.id);
       files.push(sourceFile);
+
+      // Send initial webhook if provided
+      if (webhook_url) {
+        await sendWebhook(webhook_url, {
+          job_id: job.id,
+          internal_id,
+          status: 'processing',
+          progress: 10,
+          message: 'Download complete'
+        });
+      }
 
       // Process each output format
       await job.updateProgress(20);
@@ -54,6 +86,22 @@ export function setupWorkers({ queue, logger, s3Client, concurrentJobs, config }
           duration: output.duration,
           type: output.duration ? 'preview' : 'full'
         });
+
+        // Send progress webhook
+        if (webhook_url) {
+          await sendWebhook(webhook_url, {
+            job_id: job.id,
+            internal_id,
+            status: 'processing',
+            progress: 50 + (outputs.length / processingConfig.outputs.length) * 30,
+            message: `Processed ${filename}`,
+            current_output: {
+              filename,
+              format: output.format,
+              type: output.duration ? 'preview' : 'full'
+            }
+          });
+        }
       }
 
       // Generate waveform if requested
@@ -64,6 +112,16 @@ export function setupWorkers({ queue, logger, s3Client, concurrentJobs, config }
             sourceFile,
             processingConfig.waveform.points
         );
+
+        if (webhook_url) {
+          await sendWebhook(webhook_url, {
+            job_id: job.id,
+            internal_id,
+            status: 'processing',
+            progress: 90,
+            message: 'Generated waveform data'
+          });
+        }
       }
 
       await job.updateProgress(100);
@@ -77,17 +135,9 @@ export function setupWorkers({ queue, logger, s3Client, concurrentJobs, config }
         metadata
       };
 
-      // Send webhook if provided
+      // Send completion webhook
       if (webhook_url) {
-        try {
-          await fetch(webhook_url, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(response)
-          });
-        } catch (webhookError) {
-          logger.error('Failed to send webhook:', webhookError);
-        }
+        await sendWebhook(webhook_url, response);
       }
 
       return response;
@@ -95,23 +145,15 @@ export function setupWorkers({ queue, logger, s3Client, concurrentJobs, config }
     } catch (error) {
       logger.error('Processing error:', { error, internal_id });
 
-      // If webhook provided, notify of failure
+      // Send failure webhook
       if (webhook_url) {
-        try {
-          await fetch(webhook_url, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              job_id: job.id,
-              internal_id,
-              status: 'failed',
-              error: error.message,
-              metadata
-            })
-          });
-        } catch (webhookError) {
-          logger.error('Failed to send failure webhook:', webhookError);
-        }
+        await sendWebhook(webhook_url, {
+          job_id: job.id,
+          internal_id,
+          status: 'failed',
+          error: error.message,
+          metadata
+        });
       }
 
       throw error;
@@ -132,5 +174,11 @@ export function setupWorkers({ queue, logger, s3Client, concurrentJobs, config }
     logger.error(`Job ${job.id} failed:`, { error: err, internal_id: job.data.internal_id });
   });
 
+  worker.on('error', err => {
+    logger.error('Worker error:', err);
+  });
+
   logger.info(`Worker setup complete. Processing up to ${concurrentJobs} jobs concurrently.`);
+
+  return worker;
 }
