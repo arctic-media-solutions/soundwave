@@ -44,25 +44,16 @@ export class AudioProcessor {
             quality = 'medium',
             duration,
             fade = false,
-            prefix = '',
             sample_rate = 44100,
-            channels = 2,
-            normalize = false,
-            startTime = 0,
-            filename
+            channels = 2
         } = options;
 
-        const outputFilename = filename ||
-            (prefix ? `${prefix}-${jobId}-output.${format}` : `${jobId}-output.${format}`);
-        const outputPath = path.join(this.tempDir, outputFilename);
+        // Generate temp filename for processing
+        const tempFilename = `${jobId}-${uuidv4()}.${format}`;
+        const outputPath = path.join(this.tempDir, tempFilename);
 
         return new Promise((resolve, reject) => {
             let command = ffmpeg(sourceFile);
-
-            // Set start time if specified
-            if (startTime > 0) {
-                command.setStartTime(startTime);
-            }
 
             // Set basic audio options
             command
@@ -83,11 +74,6 @@ export class AudioProcessor {
                     break;
             }
 
-            // Apply normalization if requested
-            if (normalize) {
-                command.audioFilters('loudnorm');
-            }
-
             // If this is a preview, apply duration limit and fades
             if (duration) {
                 command.duration(duration);
@@ -104,17 +90,14 @@ export class AudioProcessor {
 
             command
                 .on('start', commandLine => {
-                    this.logger.info('FFmpeg command:', commandLine);
-                })
-                .on('progress', progress => {
-                    this.logger.debug('Processing progress:', progress);
+                    this.logger.info(`FFmpeg started with command: ${commandLine}`);
                 })
                 .on('end', () => {
-                    this.logger.info(`Processing completed for ${outputFilename}`);
+                    this.logger.info(`Processing completed for ${tempFilename}`);
                     resolve(outputPath);
                 })
                 .on('error', (err) => {
-                    this.logger.error('FFmpeg error:', err);
+                    this.logger.error(`FFmpeg error: ${err.message}`);
                     reject(err);
                 })
                 .save(outputPath);
