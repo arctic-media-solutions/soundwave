@@ -45,12 +45,12 @@ export class AudioProcessor {
             duration,
             fade = false,
             sample_rate = 44100,
-            channels = 2
+            channels = 2,
+            normalize = false
         } = options;
 
-        // Generate temp filename for processing
-        const tempFilename = `${jobId}-${uuidv4()}.${format}`;
-        const outputPath = path.join(this.tempDir, tempFilename);
+        const outputFilename = options.filename || `${uuidv4()}.${format}`;
+        const outputPath = path.join(this.tempDir, outputFilename);
 
         return new Promise((resolve, reject) => {
             let command = ffmpeg(sourceFile);
@@ -74,17 +74,21 @@ export class AudioProcessor {
                     break;
             }
 
+            // If normalization is requested
+            if (normalize) {
+                command.audioFilters('loudnorm=I=-16:LRA=11:TP=-1.5');
+            }
+
             // If this is a preview, apply duration limit and fades
             if (duration) {
                 command.duration(duration);
 
                 if (fade) {
                     const fadeLength = Math.min(3, duration * 0.1); // 10% of duration or 3 seconds max
-                    command
-                        .audioFilters([
-                            `afade=t=in:st=0:d=${fadeLength}`,
-                            `afade=t=out:st=${duration-fadeLength}:d=${fadeLength}`
-                        ]);
+                    command.audioFilters([
+                        `afade=t=in:st=0:d=${fadeLength}`,
+                        `afade=t=out:st=${duration-fadeLength}:d=${fadeLength}`
+                    ]);
                 }
             }
 
@@ -92,8 +96,11 @@ export class AudioProcessor {
                 .on('start', commandLine => {
                     this.logger.info(`FFmpeg started with command: ${commandLine}`);
                 })
+                .on('progress', progress => {
+                    this.logger.debug('Processing progress:', progress);
+                })
                 .on('end', () => {
-                    this.logger.info(`Processing completed for ${tempFilename}`);
+                    this.logger.info(`Processing completed for ${outputFilename}`);
                     resolve(outputPath);
                 })
                 .on('error', (err) => {

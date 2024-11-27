@@ -34,10 +34,7 @@ export function setupWorkers({ queue, logger, s3Client, concurrentJobs, config }
 
         // Use custom path if provided, fallback to global path
         const storagePath = output.path || processingConfig.storage.path || 'audio';
-
-        // Use custom filename if provided, fallback to UUID
         const filename = output.filename || `${uuidv4()}.${output.format}`;
-
         const key = path.join(storagePath, filename).replace(/\\/g, '/');
 
         logger.info(`Uploading to ${processingConfig.storage.bucket}/${key}`, { internal_id });
@@ -82,11 +79,15 @@ export function setupWorkers({ queue, logger, s3Client, concurrentJobs, config }
 
       // Send webhook if provided
       if (webhook_url) {
-        await fetch(webhook_url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(response)
-        });
+        try {
+          await fetch(webhook_url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(response)
+          });
+        } catch (webhookError) {
+          logger.error('Failed to send webhook:', webhookError);
+        }
       }
 
       return response;
@@ -114,11 +115,13 @@ export function setupWorkers({ queue, logger, s3Client, concurrentJobs, config }
       }
 
       throw error;
+
     } finally {
       await processor.cleanup(files);
     }
   }, {
-    connection: config.redis
+    connection: config.redis,
+    concurrency: concurrentJobs
   });
 
   worker.on('completed', job => {
